@@ -10,7 +10,7 @@ import SleepyScreen from '@/components/SleepyScreen';
 import DadDashboard from '@/components/DadDashboard';
 import { useVoiceManager } from '@/hooks/useVoiceManager';
 import { useSessionManager } from '@/hooks/useSessionManager';
-import { getStore } from '@/lib/store';
+import { getStore, setStore } from '@/lib/store';
 import { type PompState, stateToMood, hasScaryWords } from '@/lib/mood';
 
 export default function Home() {
@@ -78,10 +78,13 @@ export default function Home() {
     }
   }, []);
 
-  // Check localStorage on mount
+  // Skip keyhole for now — go straight to main screen
   useEffect(() => {
     const store = getStore();
-    setShowKeyhole(!store.hasSeenIntro);
+    if (!store.hasSeenIntro) {
+      setStore({ hasSeenIntro: true });
+    }
+    setShowKeyhole(false);
   }, []);
 
   // Loading state — wait for localStorage check

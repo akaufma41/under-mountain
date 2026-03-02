@@ -261,6 +261,14 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
 
     setError(null);
 
+    // Prime speechSynthesis during user gesture — unlocks audio on mobile
+    if (window.speechSynthesis) {
+      const primer = new SpeechSynthesisUtterance('');
+      primer.volume = 0;
+      window.speechSynthesis.speak(primer);
+      window.speechSynthesis.cancel();
+    }
+
     const SpeechRecognition =
       window.webkitSpeechRecognition || window.SpeechRecognition;
 
