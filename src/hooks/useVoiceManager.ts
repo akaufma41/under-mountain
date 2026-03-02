@@ -53,6 +53,23 @@ function getRecorderMimeType(): string {
   return '';
 }
 
+// Convert a Blob to a base64 string (data URI prefix stripped)
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    // Use onload (not onloadend) — onloadend fires on BOTH success and error,
+    // which would cause a TypeError on reader.result when it's null after failure.
+    reader.onload = () => {
+      const dataUrl = reader.result as string;
+      // Strip "data:<mime>;base64," prefix
+      const base64 = dataUrl.split(',')[1] || '';
+      resolve(base64);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManagerState {
   const { isDrowsy = false } = options;
 
@@ -136,9 +153,8 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     }, TTS_TIMEOUT_MS);
   }, [clearTtsTimeout]);
 
-  // Master timeout — if the entire pipeline (STT→chat→TTS→playback)
-  // takes longer than this, force-reset everything. Catches edge cases
-  // where AbortController or audio events don't fire.
+  // Master timeout — if the entire pipeline (audio→chat→TTS→playback)
+  // takes longer than this, force-reset everything.
   const MASTER_TIMEOUT_MS = 45_000;
 
   const startProcessingTimeout = useCallback(() => {
@@ -224,43 +240,42 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     [resetPlaybackState, startTtsTimeout]
   );
 
-  // --- Chat API ---
-  const sendToChat = useCallback(
-    async (transcript: string) => {
-      const distressCheck = checkForDistress(transcript);
-      if (distressCheck.isDistress) {
-        console.warn('PANIC ALERT:', transcript);
-        playTtsAudio(distressCheck.safeResponse!);
-        return;
-      }
-
-      // isProcessing is already true (set in transcribeAudio) — keep it true
-
-      historyRef.current = [
-        ...historyRef.current,
-        { role: 'user', content: transcript },
-      ];
-
-      const store = getStore();
-
-      const requestBody = {
-        message: transcript,
-        history: historyRef.current.slice(0, -1),
-        context: {
-          object: store.currentObject || 'Shiny Penny',
-          interpretation: store.mythicalInterpretation || 'a shield for a squirrel',
-          childName: store.childName || '',
-          sessionContext: sessionContextRef.current,
-        },
-        isDrowsy,
-      };
-
-      console.log('[CHAT] Sending to API:', {
-        message: requestBody.message,
-        historyLength: requestBody.history.length,
+  // --- Combined STT + Chat: send audio directly to /api/chat ---
+  const processRecording = useCallback(
+    async (audioBlob: Blob) => {
+      console.log('[PROCESS] Sending audio for combined STT+Chat:', {
+        size: audioBlob.size,
+        type: audioBlob.type,
       });
+      setIsProcessing(true);
+      startProcessingTimeout();
 
       try {
+        // Convert blob to base64
+        const audioBase64 = await blobToBase64(audioBlob);
+        const audioMimeType = audioBlob.type || 'audio/webm';
+
+        const store = getStore();
+
+        const requestBody = {
+          audioBase64,
+          audioMimeType,
+          history: historyRef.current,
+          context: {
+            object: store.currentObject || 'Shiny Penny',
+            interpretation: store.mythicalInterpretation || 'a shield for a squirrel',
+            childName: store.childName || '',
+            sessionContext: sessionContextRef.current,
+          },
+          isDrowsy,
+        };
+
+        console.log('[PROCESS] Sending to /api/chat:', {
+          audioSize: audioBase64.length,
+          mimeType: audioMimeType,
+          historyLength: requestBody.history.length,
+        });
+
         const res = await fetchWithTimeout('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -270,13 +285,33 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
 
         const data = await res.json();
         const text = data.text || "My armor is squeaking! Say that again?";
-        console.log('[CHAT] Response:', text);
+        const transcript = (data.transcript || '').trim();
 
-        // Do NOT reset isProcessing here — keep it true through TTS phase
-        // so the button stays disabled the entire time
+        console.log('[PROCESS] Heard:', transcript);
+        console.log('[PROCESS] Reply:', text);
 
+        // If no transcript was heard, reset and show error
+        if (!transcript) {
+          resetPlaybackState();
+          setError("Sir Pomp didn't catch that! Try speaking a bit louder.");
+          return;
+        }
+
+        // Distress check on what the child said
+        const distressCheck = checkForDistress(transcript);
+        if (distressCheck.isDistress) {
+          console.warn('PANIC ALERT:', transcript);
+          // Don't add to history — a lone user entry with no assistant reply
+          // would create consecutive user messages on the next Gemini call,
+          // violating the alternating-role requirement and causing an API error.
+          playTtsAudio(distressCheck.safeResponse!);
+          return;
+        }
+
+        // Update history with both sides of the conversation
         historyRef.current = [
           ...historyRef.current,
+          { role: 'user', content: transcript },
           { role: 'assistant', content: text },
         ];
 
@@ -289,57 +324,19 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           lastActive: Date.now(),
         });
 
+        // Clear session context after first successful exchange
         sessionContextRef.current = '';
 
         // isProcessing stays true → playTtsAudio → onplay sets isPlayingAudio
         playTtsAudio(text);
-      } catch {
-        // Don't reset state here — keep isProcessing true so the button stays
-        // disabled while the fallback TTS plays. playTtsAudio will handle
-        // state transitions (onplay → isPlayingAudio) and cleanup (onended/catch).
+      } catch (err) {
+        console.error('[PROCESS] Error:', err);
+        // Don't reset state — keep isProcessing true so the button stays
+        // disabled while the fallback TTS plays.
         playTtsAudio("My armor is squeaking! Say that again?");
       }
     },
-    [playTtsAudio, isDrowsy]
-  );
-
-  // --- Server-side STT via Gemini ---
-  const transcribeAudio = useCallback(
-    async (audioBlob: Blob) => {
-      console.log('[STT] Sending audio for transcription:', {
-        size: audioBlob.size,
-        type: audioBlob.type,
-      });
-      setIsProcessing(true);
-      startProcessingTimeout();
-
-      try {
-        const formData = new FormData();
-        formData.append('audio', audioBlob, 'recording');
-
-        const res = await fetchWithTimeout('/api/stt', {
-          method: 'POST',
-          body: formData,
-        });
-
-        const data = await res.json();
-        const transcript = (data.transcript || '').trim();
-        console.log('[STT] Transcript:', transcript);
-
-        if (!transcript) {
-          resetPlaybackState();
-          setError("Sir Pomp didn't catch that! Try speaking a bit louder.");
-          return;
-        }
-
-        sendToChat(transcript);
-      } catch (err) {
-        console.error('[STT] Error:', err);
-        resetPlaybackState();
-        setError("Sir Pomp can't hear through the mountain! Check your connection.");
-      }
-    },
-    [sendToChat, resetPlaybackState, startProcessingTimeout]
+    [playTtsAudio, isDrowsy, resetPlaybackState, startProcessingTimeout]
   );
 
   // --- Recording: start / stop ---
@@ -404,7 +401,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
             return;
           }
 
-          transcribeAudio(blob);
+          processRecording(blob);
         };
 
         mediaRecorderRef.current = recorder;
@@ -418,7 +415,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           "Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings."
         );
       });
-  }, [isPlayingAudio, isProcessing, micReady, transcribeAudio]);
+  }, [isPlayingAudio, isProcessing, micReady, processRecording]);
 
   const stopListening = useCallback(() => {
     // Invalidate any pending getUserMedia that hasn't resolved yet
