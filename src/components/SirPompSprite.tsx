@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import Image from 'next/image';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -20,9 +20,6 @@ const MOOD_IMAGES: Record<SpriteMood, string> = {
 
 const FALLBACK = '/sir-pomp.png';
 
-/**
- * Per-mood framer-motion animation variants.
- */
 const moodAnimations: Record<SpriteMood, { animate: object; transition: object }> = {
   idle: {
     animate: { scale: [1, 1.02, 1], rotate: 0 },
@@ -52,9 +49,42 @@ const moodAnimations: Record<SpriteMood, { animate: object; transition: object }
   },
 };
 
+// Check which mood images actually exist (cached after first probe)
+const imageExists: Record<string, boolean> = {};
+
+function useResolvedSrc(mood: SpriteMood): string {
+  const [src, setSrc] = useState(FALLBACK);
+
+  useEffect(() => {
+    const target = MOOD_IMAGES[mood];
+    // Already know it doesn't exist
+    if (imageExists[target] === false) {
+      setSrc(FALLBACK);
+      return;
+    }
+    // Already know it exists
+    if (imageExists[target] === true) {
+      setSrc(target);
+      return;
+    }
+    // Probe with a raw img element (bypasses next/image optimizer)
+    const img = new window.Image();
+    img.onload = () => {
+      imageExists[target] = true;
+      setSrc(target);
+    };
+    img.onerror = () => {
+      imageExists[target] = false;
+      setSrc(FALLBACK);
+    };
+    img.src = target;
+  }, [mood]);
+
+  return src;
+}
+
 export default function SirPompSprite({ mood }: SirPompSpriteProps) {
-  // Build image src with fallback chain
-  const src = useMemo(() => MOOD_IMAGES[mood] ?? FALLBACK, [mood]);
+  const src = useResolvedSrc(mood);
   const anim = moodAnimations[mood] ?? moodAnimations.idle;
 
   return (
@@ -78,13 +108,7 @@ export default function SirPompSprite({ mood }: SirPompSpriteProps) {
             sizes="200px"
             className="object-contain"
             priority
-            onError={(e) => {
-              // If mood image missing, swap to fallback
-              const img = e.currentTarget as HTMLImageElement;
-              if (img.src !== FALLBACK && !img.src.endsWith(FALLBACK)) {
-                img.src = FALLBACK;
-              }
-            }}
+            unoptimized
           />
         </motion.div>
       </AnimatePresence>

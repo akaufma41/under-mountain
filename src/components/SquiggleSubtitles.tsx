@@ -26,9 +26,14 @@ export default function SquiggleSubtitles({ text }: SquiggleSubtitlesProps) {
   // Split text into segments: normal text and *squiggle* text
   const segments = text.split(/(\*[^*]+\*)/g).filter(Boolean);
 
+  // Use smaller text for longer responses
+  const isLong = text.length > 80;
+  const textSize = isLong ? 'text-base' : 'text-xl';
+  const squiggleSize = isLong ? 'text-3xl' : 'text-4xl';
+
   return (
     <motion.div
-      className="flex flex-wrap items-baseline justify-center gap-x-2 gap-y-1 max-w-md"
+      className="flex flex-wrap items-baseline justify-center gap-x-2 gap-y-1 w-full"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
@@ -42,7 +47,7 @@ export default function SquiggleSubtitles({ text }: SquiggleSubtitlesProps) {
             <motion.span
               key={i}
               variants={wordVariants}
-              className="text-5xl font-bold text-yellow-400 inline-block"
+              className={`${squiggleSize} font-bold text-yellow-400 inline-block`}
               animate={{ scale: [1, 1.2, 1] }}
               transition={{ repeat: Infinity, duration: 1.5 }}
             >
@@ -57,7 +62,7 @@ export default function SquiggleSubtitles({ text }: SquiggleSubtitlesProps) {
           <motion.span
             key={`${i}-${j}`}
             variants={wordVariants}
-            className="text-2xl text-white font-serif"
+            className={`${textSize} text-white font-serif`}
           >
             {word}
           </motion.span>

@@ -127,9 +127,9 @@ export default function Home() {
         <SirPompSprite mood={spriteMood} />
       </div>
 
-      {/* Squiggle Subtitles — middle area */}
-      <div className="px-4 py-2 flex items-center justify-center min-h-[60px]">
-        <div className="bg-stone-800/60 backdrop-blur-sm rounded-xl px-4 py-2 min-h-[48px] flex items-center justify-center">
+      {/* Squiggle Subtitles — middle area, scrollable for long text */}
+      <div className="px-4 py-2 flex items-center justify-center max-h-[30vh]">
+        <div className="bg-stone-800/60 backdrop-blur-sm rounded-xl px-4 py-3 max-h-[28vh] overflow-y-auto flex items-center justify-center">
           <SquiggleSubtitles text={responseText} />
         </div>
       </div>

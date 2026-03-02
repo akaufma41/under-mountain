@@ -103,8 +103,11 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
 
   // Browser speechSynthesis fallback
   const speakWithBrowser = useCallback((text: string) => {
+    console.log('[TTS] Browser speech fallback for:', text.slice(0, 40));
+
     if (!window.speechSynthesis) {
-      setIsPlayingAudio(false);
+      console.warn('[TTS] speechSynthesis not available');
+      markAudioDone();
       return;
     }
 
@@ -117,11 +120,19 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
 
     if (voiceRef.current) utterance.voice = voiceRef.current;
 
-    utterance.onstart = () => setIsPlayingAudio(true);
-    utterance.onend = () => markAudioDone();
-    utterance.onerror = () => markAudioDone();
-
+    // Set playing immediately — onstart often doesn't fire on mobile
+    setIsPlayingAudio(true);
     startTtsTimeout();
+
+    utterance.onend = () => {
+      console.log('[TTS] Speech ended');
+      markAudioDone();
+    };
+    utterance.onerror = (e) => {
+      console.warn('[TTS] Speech error:', e);
+      markAudioDone();
+    };
+
     window.speechSynthesis.speak(utterance);
   }, [markAudioDone, startTtsTimeout]);
 
