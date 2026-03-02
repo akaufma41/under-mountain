@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
         { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
       ],
       generationConfig: {
-        maxOutputTokens: 256,
+        maxOutputTokens: 1024,
       },
     });
 
