@@ -105,6 +105,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   }, [clearTtsTimeout]);
 
   // --- TTS playback via pre-unlocked Audio element ---
+  // Shows subtitle text at the same moment audio starts playing (no silent gap).
   const playTtsAudio = useCallback(
     async (text: string) => {
       try {
@@ -122,6 +123,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
 
         const audio = audioRef.current;
         if (!audio) {
+          setResponseText(text);
           markAudioDone();
           return;
         }
@@ -142,15 +144,19 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         };
         audio.onerror = (e) => {
           console.warn('[TTS] Audio error:', e);
+          setResponseText(text); // Show text even if audio fails
           markAudioDone();
           URL.revokeObjectURL(url);
         };
 
+        // Show text and play audio at the same moment
         audio.src = url;
+        setResponseText(text);
         startTtsTimeout();
         await audio.play();
       } catch (err) {
         console.warn('[TTS] Playback failed:', err);
+        setResponseText(text); // Show text even if TTS fails entirely
         markAudioDone();
       }
     },
@@ -164,9 +170,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       const distressCheck = checkForDistress(transcript);
       if (distressCheck.isDistress) {
         console.warn('PANIC ALERT:', transcript);
-        const response = distressCheck.safeResponse!;
-        setResponseText(response);
-        playTtsAudio(response);
+        playTtsAudio(distressCheck.safeResponse!);
         return;
       }
 
@@ -231,13 +235,10 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         // Clear session context after first exchange (one-time greeting)
         sessionContextRef.current = '';
 
-        setResponseText(text);
         playTtsAudio(text);
       } catch {
         setIsProcessing(false);
-        const fallback = "My armor is squeaking! Say that again?";
-        setResponseText(fallback);
-        playTtsAudio(fallback);
+        playTtsAudio("My armor is squeaking! Say that again?");
       }
     },
     [playTtsAudio, isDrowsy]
