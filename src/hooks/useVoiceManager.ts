@@ -27,6 +27,24 @@ interface VoiceManagerState {
 // Safety timeout — if TTS events never fire, force-reset isPlayingAudio
 const TTS_TIMEOUT_MS = 15_000;
 
+// Echo prevention — brief delay after audio ends before mic re-enables
+const ECHO_DELAY_MS = 300;
+
+// Pick best supported recording format
+function getRecorderMimeType(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const types = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/ogg;codecs=opus',
+  ];
+  for (const type of types) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return ''; // Let browser pick default
+}
+
 export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManagerState {
   const { isDrowsy = false } = options;
 
@@ -37,25 +55,34 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   const [responseText, setResponseText] = useState('');
 
   const historyRef = useRef<ChatMessage[]>([]);
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const sessionContextRef = useRef<string>('');
   const ttsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // MediaRecorder refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+
   // Load persisted history and build session context on mount
   useEffect(() => {
     const store = getStore();
-
-    // Restore last 5 turns from persisted history
     if (store.history && store.history.length > 0) {
       historyRef.current = store.history.slice(-10); // 5 turns = 10 messages
     }
-
-    // Build session context (Wednesday Morning experience)
     sessionContextRef.current = buildSessionContext(store);
   }, []);
 
-  // Clear TTS safety timeout
+  // Create persistent Audio element on mount — reused for ALL TTS playback.
+  // Reusing the same element is critical for iOS: once "unlocked" by a user
+  // gesture, subsequent .play() calls on the same element work without a gesture.
+  useEffect(() => {
+    const el = new Audio();
+    el.setAttribute('playsinline', '');
+    audioRef.current = el;
+  }, []);
+
+  // --- TTS timeout helpers ---
   const clearTtsTimeout = useCallback(() => {
     if (ttsTimeoutRef.current) {
       clearTimeout(ttsTimeoutRef.current);
@@ -63,7 +90,6 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     }
   }, []);
 
-  // Start TTS safety timeout — force-resets isPlayingAudio if events never fire
   const startTtsTimeout = useCallback(() => {
     clearTtsTimeout();
     ttsTimeoutRef.current = setTimeout(() => {
@@ -72,112 +98,66 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     }, TTS_TIMEOUT_MS);
   }, [clearTtsTimeout]);
 
-  // Mark audio done — clear timeout and reset state
   const markAudioDone = useCallback(() => {
     clearTtsTimeout();
-    setIsPlayingAudio(false);
+    // Echo prevention: brief delay before enabling mic again
+    setTimeout(() => setIsPlayingAudio(false), ECHO_DELAY_MS);
   }, [clearTtsTimeout]);
 
-  // Cached voice ref — resolved once, reused
-  const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
-  const voiceLoadedRef = useRef(false);
-
-  // Eagerly load voices on mount
-  useEffect(() => {
-    if (!window.speechSynthesis) return;
-
-    const loadVoice = () => {
-      const voices = window.speechSynthesis.getVoices();
-      if (voices.length > 0 && !voiceLoadedRef.current) {
-        voiceLoadedRef.current = true;
-        voiceRef.current =
-          voices.find((v) => v.lang.startsWith('en') && v.name.toLowerCase().includes('male')) ||
-          voices.find((v) => v.lang.startsWith('en')) ||
-          null;
-      }
-    };
-
-    loadVoice();
-    window.speechSynthesis.onvoiceschanged = loadVoice;
-  }, []);
-
-  // Browser speechSynthesis fallback
-  const speakWithBrowser = useCallback((text: string) => {
-    console.log('[TTS] Browser speech fallback for:', text.slice(0, 40));
-
-    if (!window.speechSynthesis) {
-      console.warn('[TTS] speechSynthesis not available');
-      markAudioDone();
-      return;
-    }
-
-    window.speechSynthesis.cancel();
-
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 0.95;
-    utterance.pitch = 0.7;
-    utterance.volume = 1.0;
-
-    if (voiceRef.current) utterance.voice = voiceRef.current;
-
-    // Set playing immediately — onstart often doesn't fire on mobile
-    setIsPlayingAudio(true);
-    startTtsTimeout();
-
-    utterance.onend = () => {
-      console.log('[TTS] Speech ended');
-      markAudioDone();
-    };
-    utterance.onerror = (e) => {
-      console.warn('[TTS] Speech error:', e);
-      markAudioDone();
-    };
-
-    window.speechSynthesis.speak(utterance);
-  }, [markAudioDone, startTtsTimeout]);
-
-  // ElevenLabs TTS with browser fallback
-  const speakWithElevenLabs = useCallback(
+  // --- TTS playback via pre-unlocked Audio element ---
+  const playTtsAudio = useCallback(
     async (text: string) => {
       try {
+        console.log('[TTS] Fetching audio for:', text.slice(0, 50));
         const res = await fetch('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
         });
 
-        if (!res.ok) throw new Error('TTS request failed');
+        if (!res.ok) throw new Error(`TTS request failed: ${res.status}`);
 
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
 
-        if (audioRef.current) {
-          audioRef.current.pause();
-          if (audioRef.current.src) URL.revokeObjectURL(audioRef.current.src);
+        const audio = audioRef.current;
+        if (!audio) {
+          markAudioDone();
+          return;
         }
 
-        const audio = new Audio(url);
-        audioRef.current = audio;
+        // Clean up previous object URL
+        if (audio.src && audio.src.startsWith('blob:')) {
+          URL.revokeObjectURL(audio.src);
+        }
 
-        audio.onplay = () => setIsPlayingAudio(true);
+        audio.onplay = () => {
+          console.log('[TTS] Audio playing');
+          setIsPlayingAudio(true);
+        };
         audio.onended = () => {
+          console.log('[TTS] Audio ended');
           markAudioDone();
           URL.revokeObjectURL(url);
         };
-        audio.onerror = () => {
+        audio.onerror = (e) => {
+          console.warn('[TTS] Audio error:', e);
+          markAudioDone();
           URL.revokeObjectURL(url);
-          speakWithBrowser(text);
         };
 
+        audio.src = url;
         startTtsTimeout();
         await audio.play();
-      } catch {
-        speakWithBrowser(text);
+      } catch (err) {
+        console.warn('[TTS] Playback failed:', err);
+        markAudioDone();
       }
     },
-    [speakWithBrowser, markAudioDone, startTtsTimeout]
+    [markAudioDone, startTtsTimeout]
   );
 
+  // --- Chat API ---
   const sendToChat = useCallback(
     async (transcript: string) => {
       // Safety: Panic detection — check for distress BEFORE hitting LLM
@@ -186,7 +166,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         console.warn('PANIC ALERT:', transcript);
         const response = distressCheck.safeResponse!;
         setResponseText(response);
-        speakWithElevenLabs(response);
+        playTtsAudio(response);
         return;
       }
 
@@ -216,7 +196,6 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       console.log('[CHAT] Sending to API:', {
         message: requestBody.message,
         historyLength: requestBody.history.length,
-        history: requestBody.history,
       });
 
       try {
@@ -231,8 +210,6 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         const text = data.text || "My armor is squeaking! Say that again?";
         console.log('[CHAT] Response:', text);
 
-        // *** FIX: Reset isProcessing IMMEDIATELY after API response ***
-        // TTS playback is guarded separately by isPlayingAudio
         setIsProcessing(false);
 
         // Add assistant response to history
@@ -251,81 +228,144 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           lastActive: Date.now(),
         });
 
-        // Clear session context after first exchange (it's a one-time greeting)
+        // Clear session context after first exchange (one-time greeting)
         sessionContextRef.current = '';
 
         setResponseText(text);
-        speakWithElevenLabs(text);
+        playTtsAudio(text);
       } catch {
-        setIsProcessing(false); // Always reset on error too
+        setIsProcessing(false);
         const fallback = "My armor is squeaking! Say that again?";
         setResponseText(fallback);
-        speakWithElevenLabs(fallback);
+        playTtsAudio(fallback);
       }
     },
-    [speakWithElevenLabs, isDrowsy]
+    [playTtsAudio, isDrowsy]
   );
 
+  // --- Server-side STT via Gemini ---
+  const transcribeAudio = useCallback(
+    async (audioBlob: Blob) => {
+      console.log('[STT] Sending audio for transcription:', {
+        size: audioBlob.size,
+        type: audioBlob.type,
+      });
+      setIsProcessing(true);
+
+      try {
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording');
+
+        const res = await fetch('/api/stt', {
+          method: 'POST',
+          body: formData,
+        });
+
+        const data = await res.json();
+        const transcript = (data.transcript || '').trim();
+        console.log('[STT] Transcript:', transcript);
+
+        if (!transcript) {
+          setIsProcessing(false);
+          setError("Sir Pomp didn't catch that! Try speaking a bit louder.");
+          return;
+        }
+
+        sendToChat(transcript);
+      } catch (err) {
+        console.error('[STT] Error:', err);
+        setIsProcessing(false);
+        setError("Sir Pomp can't hear through the mountain! Check your connection.");
+      }
+    },
+    [sendToChat]
+  );
+
+  // --- Recording: start / stop ---
   const startListening = useCallback(() => {
     console.log('[BUTTON] Press — isPlayingAudio:', isPlayingAudio, 'isProcessing:', isProcessing);
     if (isPlayingAudio || isProcessing) return;
 
     setError(null);
 
-    // Prime speechSynthesis during user gesture — unlocks audio on mobile
-    if (window.speechSynthesis) {
-      const primer = new SpeechSynthesisUtterance('');
-      primer.volume = 0;
-      window.speechSynthesis.speak(primer);
-      window.speechSynthesis.cancel();
+    // iOS audio unlock: play silent audio DURING the user gesture.
+    // This "warms up" the Audio element so TTS playback works later
+    // even though it happens outside a gesture context.
+    if (audioRef.current) {
+      audioRef.current.src = '/silence.wav';
+      audioRef.current.play().catch(() => {
+        // Ignore — first-tap unlock attempt, may fail on some browsers
+      });
     }
 
-    const SpeechRecognition =
-      window.webkitSpeechRecognition || window.SpeechRecognition;
+    // Request mic and start recording
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        streamRef.current = stream;
+        audioChunksRef.current = [];
 
-    if (!SpeechRecognition) {
-      setError("Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings.");
-      return;
-    }
+        const mimeType = getRecorderMimeType();
+        const recorder = mimeType
+          ? new MediaRecorder(stream, { mimeType })
+          : new MediaRecorder(stream);
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.lang = 'en-US';
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            audioChunksRef.current.push(e.data);
+          }
+        };
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      const last = event.results[event.results.length - 1];
-      if (last.isFinal) {
-        const transcript = last[0].transcript.trim();
-        console.log('[STT] Transcript captured:', transcript);
-        if (transcript) sendToChat(transcript);
-      }
-    };
+        recorder.onstop = () => {
+          // Release mic
+          stream.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
 
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      if (event.error !== 'aborted') {
-        setError("Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings.");
-      }
-      setIsListening(false);
-    };
+          const chunks = audioChunksRef.current;
+          if (chunks.length === 0) return;
 
-    recognition.onend = () => setIsListening(false);
+          const blob = new Blob(chunks, {
+            type: recorder.mimeType || 'audio/webm',
+          });
+          console.log('[REC] Recording complete:', {
+            size: blob.size,
+            type: blob.type,
+          });
 
-    recognitionRef.current = recognition;
+          // Ignore very short recordings (accidental taps)
+          if (blob.size < 1000) {
+            console.log('[REC] Recording too short, ignoring');
+            return;
+          }
 
-    try {
-      recognition.start();
-      setIsListening(true);
-      console.log('[STT] Recognition started');
-    } catch {
-      setError("Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings.");
-    }
-  }, [isPlayingAudio, isProcessing, sendToChat]);
+          transcribeAudio(blob);
+        };
+
+        mediaRecorderRef.current = recorder;
+        recorder.start();
+        setIsListening(true);
+        console.log('[REC] Recording started, mimeType:', recorder.mimeType);
+      })
+      .catch((err) => {
+        console.error('[REC] Mic access denied:', err);
+        setError(
+          "Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings."
+        );
+      });
+  }, [isPlayingAudio, isProcessing, transcribeAudio]);
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state === 'recording'
+    ) {
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
+    }
+    // Stop stream tracks if still running
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
     setIsListening(false);
   }, []);
