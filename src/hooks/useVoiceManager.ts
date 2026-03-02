@@ -28,6 +28,16 @@ interface VoiceManagerState {
 // Safety timeout — if audio never ends, force-reset
 const TTS_TIMEOUT_MS = 10_000;
 
+// Fetch timeout — abort if API takes too long
+const FETCH_TIMEOUT_MS = 20_000;
+
+// Helper: fetch with timeout
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 // Pick best supported recording format
 function getRecorderMimeType(): string {
   if (typeof MediaRecorder === 'undefined') return '';
@@ -126,7 +136,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       // isProcessing stays true through TTS — no gap where button is active
       try {
         console.log('[TTS] Fetching audio for:', text.slice(0, 50));
-        const res = await fetch('/api/tts', {
+        const res = await fetchWithTimeout('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text }),
@@ -218,7 +228,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       });
 
       try {
-        const res = await fetch('/api/chat', {
+        const res = await fetchWithTimeout('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           cache: 'no-store',
@@ -271,7 +281,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         const formData = new FormData();
         formData.append('audio', audioBlob, 'recording');
 
-        const res = await fetch('/api/stt', {
+        const res = await fetchWithTimeout('/api/stt', {
           method: 'POST',
           body: formData,
         });
