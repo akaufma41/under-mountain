@@ -41,10 +41,13 @@ function useResolvedSrc(mood: SpriteMood): string {
 
 export default function SirPompSprite({ mood }: SirPompSpriteProps) {
   const src = useResolvedSrc(mood);
+  const isThinking = mood === 'thinking';
 
   return (
     <div className="flex items-center justify-center w-full h-full p-4">
-      <div className="relative w-full h-full max-w-[360px] max-h-[360px] transition-opacity duration-300">
+      <div
+        className={`relative w-full h-full max-w-[360px] max-h-[360px] transition-opacity duration-300 ${isThinking ? 'animate-pomp-think' : ''}`}
+      >
         <Image
           src={src}
           alt={`Sir Pomp-a-Lot is ${mood}`}
