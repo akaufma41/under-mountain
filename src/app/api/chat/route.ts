@@ -6,7 +6,8 @@ import { validateOutput } from '@/lib/safety-filter';
 // Force dynamic — never cache this route
 export const dynamic = 'force-dynamic';
 
-const FALLBACK = "My armor is squeaking! Say that again?";
+// Default fallback kept for when we remove debug messages
+// const FALLBACK = "My armor is squeaking! Say that again?";
 
 const DROWSY_ADDENDUM =
   'You are getting very sleepy. Yawn between sentences. Tell The Friendly Giant that your armor is getting heavy and you need to nap soon. Keep responses to 1 sentence.';
