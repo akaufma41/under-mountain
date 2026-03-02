@@ -40,9 +40,25 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
   const [clipRadius, setClipRadius] = useState(40);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const hasTriggeredRef = useRef(false);
+  const completedRef = useRef(false);
+
+  // Safety wrapper — ensure onComplete only fires once
+  const safeComplete = useCallback(() => {
+    if (completedRef.current) return;
+    completedRef.current = true;
+    onComplete();
+  }, [onComplete]);
 
   // Speak intro — try ElevenLabs, fall back to browser speech with proper voice
   const speakIntro = useCallback(async () => {
+    // Safety timeout — if TTS onend never fires, proceed anyway after 8s
+    const safetyTimeout = setTimeout(safeComplete, 8000);
+
+    const done = () => {
+      clearTimeout(safetyTimeout);
+      safeComplete();
+    };
+
     // Try ElevenLabs first
     try {
       const res = await fetch('/api/tts', {
@@ -57,11 +73,11 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
         const audio = new Audio(url);
         audio.onended = () => {
           URL.revokeObjectURL(url);
-          onComplete();
+          done();
         };
         audio.onerror = () => {
           URL.revokeObjectURL(url);
-          onComplete();
+          done();
         };
         await audio.play();
         return;
@@ -70,9 +86,9 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
       // Fall through to browser speech
     }
 
-    // Browser speech fallback — wait for voices to load
+    // Browser speech fallback
     if (!window.speechSynthesis) {
-      setTimeout(onComplete, 500);
+      done();
       return;
     }
 
@@ -85,10 +101,10 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
     const voice = await pickVoice();
     if (voice) utterance.voice = voice;
 
-    utterance.onend = () => onComplete();
-    utterance.onerror = () => onComplete();
+    utterance.onend = () => done();
+    utterance.onerror = () => done();
     window.speechSynthesis.speak(utterance);
-  }, [onComplete]);
+  }, [safeComplete]);
 
   const triggerReveal = useCallback(() => {
     if (hasTriggeredRef.current) return;
@@ -112,7 +128,7 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
         // Mark intro as seen
         setStore({ hasSeenIntro: true });
 
-        // Speak Sir Pomp's introduction via ElevenLabs (or browser fallback)
+        // Speak Sir Pomp's introduction
         speakIntro();
       },
     });
@@ -164,21 +180,18 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
     };
   }, [triggerReveal]);
 
-  // The "content behind the keyhole" — dark stone background that gets revealed
-  // The black overlay has a circular hole punched in it via clip-path on this inner layer
   return (
     <div
       className="fixed inset-0 z-50 cursor-pointer"
       onClick={triggerReveal}
     >
-      {/* The content visible through the keyhole (stone-900 bg like the main app) */}
+      {/* The content visible through the keyhole */}
       <div
         className="absolute inset-0 bg-stone-900 flex flex-col items-center justify-center"
         style={{
           clipPath: `circle(${clipRadius}px at 50% 45%)`,
         }}
       >
-        {/* Sir Pomp's eye peeking through */}
         <motion.span
           className="text-5xl select-none"
           animate={{ rotate: [-5, 5, -5] }}
@@ -188,27 +201,26 @@ export default function Keyhole({ onComplete }: KeyholeProps) {
         </motion.span>
       </div>
 
-      {/* The black surrounding area (visible when circle is small) */}
+      {/* The black surrounding area */}
       <div
         className="absolute inset-0 bg-black pointer-events-none"
         style={{
-          // This black layer disappears as the circle grows to cover it
           clipPath: `polygon(0% 0%, 100% 0%, 100% 100%, 0% 100%)`,
-          // We mask out the circle area using a radial-gradient mask
           WebkitMaskImage: `radial-gradient(circle ${clipRadius}px at 50% 45%, transparent ${clipRadius}px, black ${clipRadius}px)`,
           maskImage: `radial-gradient(circle ${clipRadius}px at 50% 45%, transparent ${clipRadius}px, black ${clipRadius}px)`,
         }}
       />
 
-      {/* "Whisper your name..." prompt — sits on top of the black area */}
+      {/* Prompt — tells user to whisper OR tap */}
       {!revealed && (
         <motion.p
-          className="absolute left-1/2 -translate-x-1/2 text-stone-600 text-lg select-none pointer-events-none"
+          className="absolute left-1/2 -translate-x-1/2 text-stone-600 text-lg text-center select-none pointer-events-none px-8"
           style={{ top: '65%' }}
           animate={{ opacity: [0.3, 0.7, 0.3] }}
           transition={{ repeat: Infinity, duration: 3, ease: 'easeInOut' }}
         >
-          Whisper your name...
+          Whisper your name...{'\n'}
+          <span className="text-sm">or tap the screen</span>
         </motion.p>
       )}
     </div>
