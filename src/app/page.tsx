@@ -88,9 +88,9 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Sir Pomp Sprite — static image */}
+      {/* Sir Pomp Sprite — swaps mouth open/closed while talking */}
       <div className="flex-1 min-h-0 flex items-center justify-center">
-        <SirPompSprite />
+        <SirPompSprite isTalking={isPlayingAudio} />
       </div>
 
       {/* Squiggle Subtitles — middle area */}
