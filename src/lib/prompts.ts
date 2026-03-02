@@ -26,9 +26,11 @@ export function buildSystemPrompt(
   mythicalInterpretation: string,
   childName?: string
 ): string {
+  // Use function replacer to avoid String.replace special patterns ($&, $', etc.)
+  // in case Dad enters those characters via the dashboard
   let prompt = SIR_POMP_SYSTEM_PROMPT
-    .replace('{{currentObject}}', currentObject)
-    .replace('{{mythicalInterpretation}}', mythicalInterpretation);
+    .replace('{{currentObject}}', () => currentObject)
+    .replace('{{mythicalInterpretation}}', () => mythicalInterpretation);
 
   // Personalize with child's name if set
   if (childName) {

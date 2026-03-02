@@ -22,21 +22,7 @@ const SAFE_FALLBACK = "Oh, my gears are stuck! Can you say that again, Giant?";
 const MAX_OUTPUT_LENGTH = 200;
 
 export function validateOutput(text: string): string {
-  // Truncate monologues
-  if (text.length > MAX_OUTPUT_LENGTH) {
-    // Cut at last sentence boundary within limit
-    const truncated = text.slice(0, MAX_OUTPUT_LENGTH);
-    const lastPeriod = truncated.lastIndexOf('.');
-    const lastExclaim = truncated.lastIndexOf('!');
-    const lastQuestion = truncated.lastIndexOf('?');
-    const cutPoint = Math.max(lastPeriod, lastExclaim, lastQuestion);
-    if (cutPoint > 0) {
-      return truncated.slice(0, cutPoint + 1);
-    }
-    return truncated + '...';
-  }
-
-  // Check for banned words (but allow compound words that are in-character)
+  // Check for banned words FIRST — before truncation, so long text can't bypass
   const lower = text.toLowerCase();
   const cleanedLower = ALLOWED_COMPOUNDS.reduce(
     (str, compound) => str.replaceAll(compound, ''),
@@ -47,6 +33,19 @@ export function validateOutput(text: string): string {
     if (cleanedLower.includes(word)) {
       return SAFE_FALLBACK;
     }
+  }
+
+  // Truncate monologues
+  if (text.length > MAX_OUTPUT_LENGTH) {
+    const truncated = text.slice(0, MAX_OUTPUT_LENGTH);
+    const lastPeriod = truncated.lastIndexOf('.');
+    const lastExclaim = truncated.lastIndexOf('!');
+    const lastQuestion = truncated.lastIndexOf('?');
+    const cutPoint = Math.max(lastPeriod, lastExclaim, lastQuestion);
+    if (cutPoint > 0) {
+      return truncated.slice(0, cutPoint + 1);
+    }
+    return truncated + '...';
   }
 
   return text;

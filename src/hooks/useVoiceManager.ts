@@ -73,6 +73,12 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   const audioChunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
 
+  // Generation counter — invalidates pending getUserMedia when user releases early
+  const listenGenRef = useRef(0);
+
+  // Master processing timeout — dead man's switch if everything else fails
+  const processingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Load persisted history and build session context on mount
   useEffect(() => {
     const store = getStore();
@@ -106,11 +112,18 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       });
   }, []);
 
-  // --- TTS timeout helpers ---
+  // --- Timeout helpers ---
   const clearTtsTimeout = useCallback(() => {
     if (ttsTimeoutRef.current) {
       clearTimeout(ttsTimeoutRef.current);
       ttsTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearProcessingTimeout = useCallback(() => {
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
     }
   }, []);
 
@@ -123,17 +136,34 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     }, TTS_TIMEOUT_MS);
   }, [clearTtsTimeout]);
 
+  // Master timeout — if the entire pipeline (STT→chat→TTS→playback)
+  // takes longer than this, force-reset everything. Catches edge cases
+  // where AbortController or audio events don't fire.
+  const MASTER_TIMEOUT_MS = 45_000;
+
+  const startProcessingTimeout = useCallback(() => {
+    clearProcessingTimeout();
+    processingTimeoutRef.current = setTimeout(() => {
+      console.warn('[VOICE] Master safety timeout — force-resetting all state');
+      clearTtsTimeout();
+      setIsPlayingAudio(false);
+      setIsProcessing(false);
+    }, MASTER_TIMEOUT_MS);
+  }, [clearProcessingTimeout, clearTtsTimeout]);
+
   // Reset ALL blocking state — called when audio ends or on any failure
   const resetPlaybackState = useCallback(() => {
     clearTtsTimeout();
+    clearProcessingTimeout();
     setIsPlayingAudio(false);
     setIsProcessing(false);
-  }, [clearTtsTimeout]);
+  }, [clearTtsTimeout, clearProcessingTimeout]);
 
   // --- TTS playback via pre-unlocked Audio element ---
   const playTtsAudio = useCallback(
     async (text: string) => {
       // isProcessing stays true through TTS — no gap where button is active
+      let objectUrl: string | null = null;
       try {
         console.log('[TTS] Fetching audio for:', text.slice(0, 50));
         const res = await fetchWithTimeout('/api/tts', {
@@ -145,10 +175,11 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         if (!res.ok) throw new Error(`TTS request failed: ${res.status}`);
 
         const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
+        objectUrl = URL.createObjectURL(blob);
 
         const audio = audioRef.current;
         if (!audio) {
+          URL.revokeObjectURL(objectUrl);
           setResponseText(text);
           resetPlaybackState();
           return;
@@ -159,6 +190,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           URL.revokeObjectURL(audio.src);
         }
 
+        const currentUrl = objectUrl;
         audio.onplay = () => {
           console.log('[TTS] Audio playing');
           // Transition: processing → playing
@@ -167,23 +199,24 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         };
         audio.onended = () => {
           console.log('[TTS] Audio ended');
-          URL.revokeObjectURL(url);
+          URL.revokeObjectURL(currentUrl);
           resetPlaybackState();
         };
         audio.onerror = (e) => {
           console.warn('[TTS] Audio error:', e);
-          URL.revokeObjectURL(url);
+          URL.revokeObjectURL(currentUrl);
           setResponseText(text);
           resetPlaybackState();
         };
 
         // Show text and play audio at the same moment
-        audio.src = url;
+        audio.src = objectUrl;
         setResponseText(text);
         startTtsTimeout();
         await audio.play();
       } catch (err) {
         console.warn('[TTS] Playback failed:', err);
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
         setResponseText(text);
         resetPlaybackState();
       }
@@ -261,11 +294,13 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         // isProcessing stays true → playTtsAudio → onplay sets isPlayingAudio
         playTtsAudio(text);
       } catch {
-        resetPlaybackState();
+        // Don't reset state here — keep isProcessing true so the button stays
+        // disabled while the fallback TTS plays. playTtsAudio will handle
+        // state transitions (onplay → isPlayingAudio) and cleanup (onended/catch).
         playTtsAudio("My armor is squeaking! Say that again?");
       }
     },
-    [playTtsAudio, resetPlaybackState, isDrowsy]
+    [playTtsAudio, isDrowsy]
   );
 
   // --- Server-side STT via Gemini ---
@@ -276,6 +311,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         type: audioBlob.type,
       });
       setIsProcessing(true);
+      startProcessingTimeout();
 
       try {
         const formData = new FormData();
@@ -303,7 +339,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         setError("Sir Pomp can't hear through the mountain! Check your connection.");
       }
     },
-    [sendToChat, resetPlaybackState]
+    [sendToChat, resetPlaybackState, startProcessingTimeout]
   );
 
   // --- Recording: start / stop ---
@@ -312,6 +348,11 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     if (isPlayingAudio || isProcessing) return;
 
     setError(null);
+
+    // Generation counter — if stopListening runs before getUserMedia resolves,
+    // it increments listenGenRef, and the stale .then() callback sees a mismatch
+    // and aborts instead of creating a zombie recorder.
+    const gen = ++listenGenRef.current;
 
     // iOS audio unlock: play silent audio DURING the user gesture
     if (audioRef.current) {
@@ -323,6 +364,12 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     navigator.mediaDevices
       .getUserMedia({ audio: true })
       .then((stream) => {
+        // If user already released (or pressed again), this request is stale — abort
+        if (gen !== listenGenRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
         streamRef.current = stream;
         audioChunksRef.current = [];
 
@@ -374,6 +421,9 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   }, [isPlayingAudio, isProcessing, micReady, transcribeAudio]);
 
   const stopListening = useCallback(() => {
+    // Invalidate any pending getUserMedia that hasn't resolved yet
+    listenGenRef.current++;
+
     if (
       mediaRecorderRef.current &&
       mediaRecorderRef.current.state === 'recording'
