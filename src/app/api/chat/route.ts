@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.error('GEMINI_API_KEY is not set');
-      return NextResponse.json({ text: FALLBACK });
+      return NextResponse.json({ text: "The magic key is missing! (No API key)" });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -97,6 +97,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ text: "Sir Pomp is catching his breath! Too many adventures today. Try again in a minute!" });
     }
 
-    return NextResponse.json({ text: FALLBACK });
+    return NextResponse.json({ text: `Oops! ${msg.slice(0, 80) || 'Unknown error'}` });
   }
 }
