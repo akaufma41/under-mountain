@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold, SchemaType } from '@google/generative-ai';
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
 import { buildSystemPrompt } from '@/lib/prompts';
 import { validateOutput } from '@/lib/safety-filter';
 
@@ -60,64 +60,68 @@ export async function POST(req: NextRequest) {
       systemPrompt += `\n\n**SLEEPY MODE:** ${DROWSY_ADDENDUM}`;
     }
 
-    // Build chat history for Gemini
-    const chatHistory = history.map((msg) => ({
-      role: (msg.role === 'assistant' ? 'model' : 'user') as 'model' | 'user',
-      parts: [{ text: msg.content }],
-    }));
-
     const genAI = new GoogleGenerativeAI(apiKey);
 
     // --- Audio path: combined STT + Chat in one call ---
     if (audioBase64 && audioMimeType) {
       const model = genAI.getGenerativeModel({
         model: 'gemini-2.0-flash',
-        safetySettings: SAFETY_SETTINGS,
+        // No safety settings — system prompt mentions "fire, knives, naughty" which
+        // triggers aggressive filters. We use our own safety layer instead.
         generationConfig: {
           maxOutputTokens: 1024,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: SchemaType.OBJECT,
-            properties: {
-              heard: {
-                type: SchemaType.STRING,
-                description: 'Brief transcript of what the child said',
-              },
-              reply: {
-                type: SchemaType.STRING,
-                description: 'Your in-character response as Sir Pomp-a-Lot',
-              },
-            },
-            required: ['heard', 'reply'],
-          },
         },
       });
 
-      const contents = [
-        { role: 'user' as const, parts: [{ text: `System: ${systemPrompt}` }] },
-        { role: 'model' as const, parts: [{ text: 'Hark! Sir Pomp-a-Lot reporting for duty! What news from the Big World, Giant One?' }] },
-        ...chatHistory,
-        {
-          role: 'user' as const,
-          parts: [
-            { inlineData: { mimeType: audioMimeType, data: audioBase64 } },
-          ],
-        },
-      ];
+      // Bake system prompt + conversation history into a single text part.
+      // Must use FLAT ARRAY format — generateContent([part, part]) — not the
+      // structured multi-turn { contents: [{role, parts}] } format, because
+      // the multi-turn format does not process audio inlineData correctly.
+      let textPrompt = systemPrompt;
 
-      const result = await model.generateContent({ contents });
-      const rawText = result.response.text();
+      if (history.length > 0) {
+        textPrompt += '\n\n**Previous conversation:**';
+        for (const msg of history) {
+          const speaker = msg.role === 'assistant' ? 'Sir Pomp-a-Lot' : 'The Friendly Giant';
+          textPrompt += `\n${speaker}: ${msg.content}`;
+        }
+      }
+
+      textPrompt += '\n\nNow listen to the audio from The Friendly Giant. On the first line write HEARD: followed by what she said. On the second line write REPLY: followed by your in-character response.\nExample:\nHEARD: hello sir pomp\nREPLY: Hark! The Giant speaks! Did you bring any cheese?';
+
+      // Flat array of parts — same format as the working STT endpoint
+      const result = await model.generateContent([
+        { inlineData: { mimeType: audioMimeType, data: audioBase64 } },
+        { text: textPrompt },
+      ]);
+
+      const response = result.response;
+
+      // Check if response was blocked
+      if (!response.candidates || response.candidates.length === 0) {
+        const blockReason = response.promptFeedback?.blockReason || 'unknown';
+        console.error('[CHAT API] Response blocked:', blockReason);
+        return NextResponse.json(
+          { text: FALLBACK, transcript: '', error: `blocked: ${blockReason}` },
+          { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
+        );
+      }
+
+      const rawText = response.text();
       console.log('[CHAT API] Audio response raw:', rawText);
 
       let heard = '';
-      let reply = FALLBACK;
+      let reply = '';
 
-      try {
-        const json = JSON.parse(rawText);
-        heard = (json.heard || '').trim();
-        reply = (json.reply || FALLBACK).trim();
-      } catch {
-        // If JSON parsing fails, treat the whole response as the reply
+      // Parse HEARD:/REPLY: format
+      const heardMatch = rawText.match(/HEARD:\s*(.*)/i);
+      const replyMatch = rawText.match(/REPLY:\s*([\s\S]*)/i);
+
+      if (heardMatch) heard = heardMatch[1].trim();
+      if (replyMatch) reply = replyMatch[1].trim();
+
+      // If REPLY parsing failed, use the whole response as the reply
+      if (!reply) {
         reply = rawText.trim() || FALLBACK;
       }
 
@@ -131,6 +135,12 @@ export async function POST(req: NextRequest) {
         { headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' } }
       );
     }
+
+    // Build chat history for Gemini (text path only)
+    const chatHistory = history.map((msg) => ({
+      role: (msg.role === 'assistant' ? 'model' : 'user') as 'model' | 'user',
+      parts: [{ text: msg.content }],
+    }));
 
     // --- Text path: backward compatibility ---
     if (message) {
@@ -165,13 +175,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ text: FALLBACK });
   } catch (error: unknown) {
     const err = error as Error & { status?: number; statusText?: string; message?: string };
-    console.error('[CHAT API] ERROR:', err?.message || error);
+    const errMsg = err?.message || String(error);
+    console.error('[CHAT API] ERROR:', errMsg);
 
-    const msg = err?.message || '';
-    if (msg.includes('429') || msg.includes('quota')) {
-      return NextResponse.json({ text: "Sir Pomp is catching his breath! Too many adventures today. Try again in a minute!" });
+    if (errMsg.includes('429') || errMsg.includes('quota')) {
+      return NextResponse.json({ text: "Sir Pomp is catching his breath! Too many adventures today. Try again in a minute!", transcript: '' });
     }
 
-    return NextResponse.json({ text: FALLBACK });
+    // Surface error details so client can log them for debugging
+    return NextResponse.json({ text: FALLBACK, transcript: '', error: errMsg });
   }
 }

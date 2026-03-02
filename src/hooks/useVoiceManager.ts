@@ -287,31 +287,38 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         const text = data.text || "My armor is squeaking! Say that again?";
         const transcript = (data.transcript || '').trim();
 
+        // Log server-side errors for debugging
+        if (data.error) {
+          console.error('[PROCESS] Server error:', data.error);
+        }
         console.log('[PROCESS] Heard:', transcript);
         console.log('[PROCESS] Reply:', text);
 
-        // If no transcript was heard, reset and show error
-        if (!transcript) {
+        // If no transcript AND no real reply, nothing was heard
+        if (!transcript && text === "My armor is squeaking! Say that again?") {
           resetPlaybackState();
           setError("Sir Pomp didn't catch that! Try speaking a bit louder.");
           return;
         }
 
-        // Distress check on what the child said
-        const distressCheck = checkForDistress(transcript);
-        if (distressCheck.isDistress) {
-          console.warn('PANIC ALERT:', transcript);
-          // Don't add to history — a lone user entry with no assistant reply
-          // would create consecutive user messages on the next Gemini call,
-          // violating the alternating-role requirement and causing an API error.
-          playTtsAudio(distressCheck.safeResponse!);
-          return;
+        // Distress check on what the child said (skip if no transcript)
+        if (transcript) {
+          const distressCheck = checkForDistress(transcript);
+          if (distressCheck.isDistress) {
+            console.warn('PANIC ALERT:', transcript);
+            // Don't add to history — a lone user entry with no assistant reply
+            // would create consecutive user messages on the next Gemini call,
+            // violating the alternating-role requirement and causing an API error.
+            playTtsAudio(distressCheck.safeResponse!);
+            return;
+          }
         }
 
         // Update history with both sides of the conversation
+        // Use transcript if available, otherwise use a placeholder
         historyRef.current = [
           ...historyRef.current,
-          { role: 'user', content: transcript },
+          { role: 'user', content: transcript || '(audio message)' },
           { role: 'assistant', content: text },
         ];
 
