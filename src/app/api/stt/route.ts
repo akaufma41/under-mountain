@@ -37,12 +37,26 @@ export async function POST(req: Request) {
         },
       },
       {
-        text: 'Transcribe exactly what the child says in this audio. Return only the spoken words, nothing else. If the audio is silent or unintelligible, return an empty string.',
+        text: 'Listen to this audio recording of a young child speaking. Transcribe ONLY the exact spoken words. Rules: return ONLY the words spoken, no punctuation except periods and question marks, no descriptions like "(child laughing)" or "(background noise)", no quotation marks. If you cannot hear any clear speech, return exactly the word EMPTY and nothing else.',
       },
     ]);
 
-    const transcript = result.response.text().trim();
-    console.log('[STT] Transcript:', transcript);
+    let transcript = result.response.text().trim();
+    console.log('[STT] Raw transcript:', transcript);
+
+    // Strip common Gemini artifacts
+    transcript = transcript
+      .replace(/^["']|["']$/g, '')   // Remove wrapping quotes
+      .replace(/^\(.*?\)\s*/g, '')   // Remove (descriptions)
+      .replace(/\*+/g, '')          // Remove asterisks
+      .trim();
+
+    // Treat "EMPTY" or very short non-word results as no speech
+    if (transcript === 'EMPTY' || transcript.length < 2) {
+      transcript = '';
+    }
+
+    console.log('[STT] Clean transcript:', transcript);
 
     return NextResponse.json({ transcript });
   } catch (error) {

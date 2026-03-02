@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
-import { motion, type TargetAndTransition, type Transition } from 'framer-motion';
 
 export type SpriteMood = 'idle' | 'excited' | 'thinking' | 'sleeping' | 'scared';
 
@@ -19,35 +18,6 @@ const MOOD_IMAGES: Record<SpriteMood, string> = {
 };
 
 const FALLBACK = '/sir-pomp.png';
-
-const moodAnimations: Record<SpriteMood, { animate: TargetAndTransition; transition: Transition }> = {
-  idle: {
-    animate: { scale: [1, 1.02, 1] },
-    transition: { scale: { duration: 3, repeat: Infinity, ease: 'easeInOut' } },
-  },
-  excited: {
-    animate: { scale: [1, 1.06, 1], y: [0, -4, 0] },
-    transition: {
-      scale: { duration: 0.5, repeat: Infinity, ease: 'easeInOut' },
-      y: { duration: 0.5, repeat: Infinity, ease: 'easeInOut' },
-    },
-  },
-  thinking: {
-    animate: { rotate: [-2, 2, -2] },
-    transition: { rotate: { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } },
-  },
-  sleeping: {
-    animate: { scale: [1, 1.01, 1], y: [0, 2, 0] },
-    transition: {
-      scale: { duration: 4, repeat: Infinity, ease: 'easeInOut' },
-      y: { duration: 4, repeat: Infinity, ease: 'easeInOut' },
-    },
-  },
-  scared: {
-    animate: { x: [-2, 2, -2, 2, 0], scale: 0.95 },
-    transition: { x: { duration: 0.3, repeat: Infinity, ease: 'linear' } },
-  },
-};
 
 // Cache which mood images exist
 const imageExists: Record<string, boolean> = {};
@@ -71,15 +41,10 @@ function useResolvedSrc(mood: SpriteMood): string {
 
 export default function SirPompSprite({ mood }: SirPompSpriteProps) {
   const src = useResolvedSrc(mood);
-  const anim = moodAnimations[mood] ?? moodAnimations.idle;
 
   return (
     <div className="flex items-center justify-center w-full h-full p-4">
-      <motion.div
-        animate={anim.animate}
-        transition={anim.transition}
-        className="relative w-full h-full max-w-[360px] max-h-[360px]"
-      >
+      <div className="relative w-full h-full max-w-[360px] max-h-[360px] transition-opacity duration-300">
         <Image
           src={src}
           alt={`Sir Pomp-a-Lot is ${mood}`}
@@ -89,7 +54,7 @@ export default function SirPompSprite({ mood }: SirPompSpriteProps) {
           priority
           unoptimized
         />
-      </motion.div>
+      </div>
     </div>
   );
 }
