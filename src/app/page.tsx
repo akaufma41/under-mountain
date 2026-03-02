@@ -104,7 +104,7 @@ export default function Home() {
 
   // Main talking screen — mobile-first vertical layout
   return (
-    <main className="h-dvh bg-stone-900 flex flex-col justify-between relative overflow-hidden">
+    <main className="h-dvh bg-stone-900 flex flex-col justify-between relative overflow-hidden select-none">
       {/* Secret Screw — invisible 3s long-press trigger */}
       <div
         className="absolute top-0 left-0 w-12 h-12 z-40"
