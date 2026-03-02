@@ -6,8 +6,7 @@ import { validateOutput } from '@/lib/safety-filter';
 // Force dynamic — never cache this route
 export const dynamic = 'force-dynamic';
 
-// Default fallback kept for when we remove debug messages
-// const FALLBACK = "My armor is squeaking! Say that again?";
+const FALLBACK = "My armor is squeaking! Say that again?";
 
 const DROWSY_ADDENDUM =
   'You are getting very sleepy. Yawn between sentences. Tell The Friendly Giant that your armor is getting heavy and you need to nap soon. Keep responses to 1 sentence.';
@@ -26,12 +25,12 @@ export async function POST(req: NextRequest) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       console.error('GEMINI_API_KEY is not set');
-      return NextResponse.json({ text: "The magic key is missing! (No API key)" });
+      return NextResponse.json({ text: FALLBACK });
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       safetySettings: [
         { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
         { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_LOW_AND_ABOVE },
@@ -98,6 +97,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ text: "Sir Pomp is catching his breath! Too many adventures today. Try again in a minute!" });
     }
 
-    return NextResponse.json({ text: `Oops! ${msg.slice(0, 80) || 'Unknown error'}` });
+    return NextResponse.json({ text: FALLBACK });
   }
 }
