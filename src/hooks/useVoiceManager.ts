@@ -18,17 +18,15 @@ interface VoiceManagerState {
   isListening: boolean;
   isProcessing: boolean;
   isPlayingAudio: boolean;
+  micReady: boolean;
   error: string | null;
   responseText: string;
   startListening: () => void;
   stopListening: () => void;
 }
 
-// Safety timeout — if TTS events never fire, force-reset isPlayingAudio
-const TTS_TIMEOUT_MS = 15_000;
-
-// Echo prevention — brief delay after audio ends before mic re-enables
-const ECHO_DELAY_MS = 300;
+// Safety timeout — if audio never ends, force-reset
+const TTS_TIMEOUT_MS = 10_000;
 
 // Pick best supported recording format
 function getRecorderMimeType(): string {
@@ -42,7 +40,7 @@ function getRecorderMimeType(): string {
   for (const type of types) {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
-  return ''; // Let browser pick default
+  return '';
 }
 
 export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManagerState {
@@ -51,6 +49,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   const [isListening, setIsListening] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [micReady, setMicReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [responseText, setResponseText] = useState('');
 
@@ -68,18 +67,33 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   useEffect(() => {
     const store = getStore();
     if (store.history && store.history.length > 0) {
-      historyRef.current = store.history.slice(-10); // 5 turns = 10 messages
+      historyRef.current = store.history.slice(-10);
     }
     sessionContextRef.current = buildSessionContext(store);
   }, []);
 
-  // Create persistent Audio element on mount — reused for ALL TTS playback.
-  // Reusing the same element is critical for iOS: once "unlocked" by a user
-  // gesture, subsequent .play() calls on the same element work without a gesture.
+  // Create persistent Audio element on mount
   useEffect(() => {
     const el = new Audio();
     el.setAttribute('playsinline', '');
     audioRef.current = el;
+  }, []);
+
+  // Request mic permission immediately on mount — gets the browser prompt
+  // out of the way before the child tries to use the shield
+  useEffect(() => {
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        // Permission granted — stop the stream immediately, we just needed the prompt
+        stream.getTracks().forEach((t) => t.stop());
+        setMicReady(true);
+        console.log('[MIC] Permission granted');
+      })
+      .catch((err) => {
+        console.error('[MIC] Permission denied on mount:', err);
+        setError("Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings.");
+      });
   }, []);
 
   // --- TTS timeout helpers ---
@@ -93,21 +107,23 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
   const startTtsTimeout = useCallback(() => {
     clearTtsTimeout();
     ttsTimeoutRef.current = setTimeout(() => {
-      console.warn('[TTS] Safety timeout — force-resetting isPlayingAudio');
+      console.warn('[TTS] Safety timeout — force-resetting state');
       setIsPlayingAudio(false);
+      setIsProcessing(false);
     }, TTS_TIMEOUT_MS);
   }, [clearTtsTimeout]);
 
-  const markAudioDone = useCallback(() => {
+  // Reset ALL blocking state — called when audio ends or on any failure
+  const resetPlaybackState = useCallback(() => {
     clearTtsTimeout();
-    // Echo prevention: brief delay before enabling mic again
-    setTimeout(() => setIsPlayingAudio(false), ECHO_DELAY_MS);
+    setIsPlayingAudio(false);
+    setIsProcessing(false);
   }, [clearTtsTimeout]);
 
   // --- TTS playback via pre-unlocked Audio element ---
-  // Shows subtitle text at the same moment audio starts playing (no silent gap).
   const playTtsAudio = useCallback(
     async (text: string) => {
+      // isProcessing stays true through TTS — no gap where button is active
       try {
         console.log('[TTS] Fetching audio for:', text.slice(0, 50));
         const res = await fetch('/api/tts', {
@@ -124,7 +140,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         const audio = audioRef.current;
         if (!audio) {
           setResponseText(text);
-          markAudioDone();
+          resetPlaybackState();
           return;
         }
 
@@ -135,18 +151,20 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
 
         audio.onplay = () => {
           console.log('[TTS] Audio playing');
+          // Transition: processing → playing
+          setIsProcessing(false);
           setIsPlayingAudio(true);
         };
         audio.onended = () => {
           console.log('[TTS] Audio ended');
-          markAudioDone();
           URL.revokeObjectURL(url);
+          resetPlaybackState();
         };
         audio.onerror = (e) => {
           console.warn('[TTS] Audio error:', e);
-          setResponseText(text); // Show text even if audio fails
-          markAudioDone();
           URL.revokeObjectURL(url);
+          setResponseText(text);
+          resetPlaybackState();
         };
 
         // Show text and play audio at the same moment
@@ -156,17 +174,16 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         await audio.play();
       } catch (err) {
         console.warn('[TTS] Playback failed:', err);
-        setResponseText(text); // Show text even if TTS fails entirely
-        markAudioDone();
+        setResponseText(text);
+        resetPlaybackState();
       }
     },
-    [markAudioDone, startTtsTimeout]
+    [resetPlaybackState, startTtsTimeout]
   );
 
   // --- Chat API ---
   const sendToChat = useCallback(
     async (transcript: string) => {
-      // Safety: Panic detection — check for distress BEFORE hitting LLM
       const distressCheck = checkForDistress(transcript);
       if (distressCheck.isDistress) {
         console.warn('PANIC ALERT:', transcript);
@@ -174,15 +191,13 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         return;
       }
 
-      setIsProcessing(true);
+      // isProcessing is already true (set in transcribeAudio) — keep it true
 
-      // Add user message to history
       historyRef.current = [
         ...historyRef.current,
         { role: 'user', content: transcript },
       ];
 
-      // Read current store for context
       const store = getStore();
 
       const requestBody = {
@@ -214,9 +229,9 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         const text = data.text || "My armor is squeaking! Say that again?";
         console.log('[CHAT] Response:', text);
 
-        setIsProcessing(false);
+        // Do NOT reset isProcessing here — keep it true through TTS phase
+        // so the button stays disabled the entire time
 
-        // Add assistant response to history
         historyRef.current = [
           ...historyRef.current,
           { role: 'assistant', content: text },
@@ -226,22 +241,21 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           historyRef.current = historyRef.current.slice(-20);
         }
 
-        // Persist last 5 turns (10 messages) and update lastActive
         setStore({
           history: historyRef.current.slice(-10),
           lastActive: Date.now(),
         });
 
-        // Clear session context after first exchange (one-time greeting)
         sessionContextRef.current = '';
 
+        // isProcessing stays true → playTtsAudio → onplay sets isPlayingAudio
         playTtsAudio(text);
       } catch {
-        setIsProcessing(false);
+        resetPlaybackState();
         playTtsAudio("My armor is squeaking! Say that again?");
       }
     },
-    [playTtsAudio, isDrowsy]
+    [playTtsAudio, resetPlaybackState, isDrowsy]
   );
 
   // --- Server-side STT via Gemini ---
@@ -267,7 +281,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         console.log('[STT] Transcript:', transcript);
 
         if (!transcript) {
-          setIsProcessing(false);
+          resetPlaybackState();
           setError("Sir Pomp didn't catch that! Try speaking a bit louder.");
           return;
         }
@@ -275,28 +289,24 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         sendToChat(transcript);
       } catch (err) {
         console.error('[STT] Error:', err);
-        setIsProcessing(false);
+        resetPlaybackState();
         setError("Sir Pomp can't hear through the mountain! Check your connection.");
       }
     },
-    [sendToChat]
+    [sendToChat, resetPlaybackState]
   );
 
   // --- Recording: start / stop ---
   const startListening = useCallback(() => {
-    console.log('[BUTTON] Press — isPlayingAudio:', isPlayingAudio, 'isProcessing:', isProcessing);
+    console.log('[BUTTON] Press — isPlayingAudio:', isPlayingAudio, 'isProcessing:', isProcessing, 'micReady:', micReady);
     if (isPlayingAudio || isProcessing) return;
 
     setError(null);
 
-    // iOS audio unlock: play silent audio DURING the user gesture.
-    // This "warms up" the Audio element so TTS playback works later
-    // even though it happens outside a gesture context.
+    // iOS audio unlock: play silent audio DURING the user gesture
     if (audioRef.current) {
       audioRef.current.src = '/silence.wav';
-      audioRef.current.play().catch(() => {
-        // Ignore — first-tap unlock attempt, may fail on some browsers
-      });
+      audioRef.current.play().catch(() => {});
     }
 
     // Request mic and start recording
@@ -318,7 +328,6 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         };
 
         recorder.onstop = () => {
-          // Release mic
           stream.getTracks().forEach((t) => t.stop());
           streamRef.current = null;
 
@@ -333,7 +342,6 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
             type: blob.type,
           });
 
-          // Ignore very short recordings (accidental taps)
           if (blob.size < 1000) {
             console.log('[REC] Recording too short, ignoring');
             return;
@@ -353,7 +361,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           "Sir Pomp can't hear you! Ask the Tall Giant to check the magic window settings."
         );
       });
-  }, [isPlayingAudio, isProcessing, transcribeAudio]);
+  }, [isPlayingAudio, isProcessing, micReady, transcribeAudio]);
 
   const stopListening = useCallback(() => {
     if (
@@ -363,7 +371,6 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       mediaRecorderRef.current.stop();
       mediaRecorderRef.current = null;
     }
-    // Stop stream tracks if still running
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
@@ -375,6 +382,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
     isListening,
     isProcessing,
     isPlayingAudio,
+    micReady,
     error,
     responseText,
     startListening,

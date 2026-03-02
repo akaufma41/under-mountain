@@ -42,7 +42,7 @@ export default function SleepyScreen() {
 
       {/* Sleeping Sir Pomp */}
       <div className="w-[200px] h-[200px] mb-6">
-        <SirPompSprite mood="sleeping" />
+        <SirPompSprite />
       </div>
 
       {/* Speech bubble on tap */}

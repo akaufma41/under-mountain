@@ -1,23 +1,19 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ShieldButton from '@/components/ShieldButton';
 import SquiggleSubtitles from '@/components/SquiggleSubtitles';
 import SirPompSprite from '@/components/SirPompSprite';
-import type { SpriteMood } from '@/components/SirPompSprite';
 import Keyhole from '@/components/Keyhole';
 import SleepyScreen from '@/components/SleepyScreen';
 import DadDashboard from '@/components/DadDashboard';
 import { useVoiceManager } from '@/hooks/useVoiceManager';
 import { useSessionManager } from '@/hooks/useSessionManager';
 import { getStore, setStore } from '@/lib/store';
-import { type PompState, stateToMood, hasScaryWords } from '@/lib/mood';
 
 export default function Home() {
   const [showKeyhole, setShowKeyhole] = useState<boolean | null>(null);
   const [showDashboard, setShowDashboard] = useState(false);
-  const [isScared, setIsScared] = useState(false);
-  const scaredTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { isDrowsy, isSleepy, resetSession } = useSessionManager();
 
@@ -25,42 +21,12 @@ export default function Home() {
     isListening,
     isProcessing,
     isPlayingAudio,
+    micReady,
     error,
     responseText,
     startListening,
     stopListening,
   } = useVoiceManager({ isDrowsy });
-
-  // Derive Sir Pomp's app-level state
-  const pompState: PompState = useMemo(() => {
-    if (isListening) return 'listening';
-    if (isProcessing) return 'processing';
-    if (isPlayingAudio) return 'speaking';
-    return 'idle';
-  }, [isListening, isProcessing, isPlayingAudio]);
-
-  // Check for scary words in new responses → 3s scared override
-  const prevResponseRef = useRef('');
-  useEffect(() => {
-    if (responseText && responseText !== prevResponseRef.current) {
-      prevResponseRef.current = responseText;
-      if (hasScaryWords(responseText)) {
-        setIsScared(true);
-        if (scaredTimer.current) clearTimeout(scaredTimer.current);
-        scaredTimer.current = setTimeout(() => setIsScared(false), 3000);
-      }
-    }
-  }, [responseText]);
-
-  // Cleanup scared timer
-  useEffect(() => {
-    return () => {
-      if (scaredTimer.current) clearTimeout(scaredTimer.current);
-    };
-  }, []);
-
-  // Final mood: scared override > state-based mood
-  const spriteMood: SpriteMood = isScared ? 'scared' : stateToMood(pompState);
 
   // Secret Screw — 3-second long press
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -122,19 +88,19 @@ export default function Home() {
         </p>
       </div>
 
-      {/* Sir Pomp Sprite — centered in the upper area */}
+      {/* Sir Pomp Sprite — static image */}
       <div className="flex-1 min-h-0 flex items-center justify-center">
-        <SirPompSprite mood={spriteMood} />
+        <SirPompSprite />
       </div>
 
-      {/* Squiggle Subtitles — middle area, scrollable for long text */}
+      {/* Squiggle Subtitles — middle area */}
       <div className="px-4 py-2 flex items-center justify-center max-h-[30vh]">
         <div className="bg-stone-800/60 backdrop-blur-sm rounded-xl px-4 py-3 max-h-[28vh] overflow-y-auto flex items-center justify-center">
           <SquiggleSubtitles text={responseText} />
         </div>
       </div>
 
-      {/* Shield button — bottom area, lifted above browser controls */}
+      {/* Shield button — bottom area */}
       <div
         className="py-4 flex justify-center"
         style={{ paddingBottom: 'max(1.5rem, calc(env(safe-area-inset-bottom) + 1rem))' }}
@@ -143,6 +109,7 @@ export default function Home() {
           isListening={isListening}
           isProcessing={isProcessing}
           isPlayingAudio={isPlayingAudio}
+          micReady={micReady}
           onPointerDown={startListening}
           onPointerUp={stopListening}
         />
