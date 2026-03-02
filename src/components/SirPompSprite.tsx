@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Image from 'next/image';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, type TargetAndTransition, type Transition } from 'framer-motion';
 
 export type SpriteMood = 'idle' | 'excited' | 'thinking' | 'sleeping' | 'scared';
 
@@ -20,20 +20,20 @@ const MOOD_IMAGES: Record<SpriteMood, string> = {
 
 const FALLBACK = '/sir-pomp.png';
 
-const moodAnimations: Record<SpriteMood, { animate: object; transition: object }> = {
+const moodAnimations: Record<SpriteMood, { animate: TargetAndTransition; transition: Transition }> = {
   idle: {
-    animate: { scale: [1, 1.02, 1], rotate: 0 },
+    animate: { scale: [1, 1.02, 1] },
     transition: { scale: { duration: 3, repeat: Infinity, ease: 'easeInOut' } },
   },
   excited: {
-    animate: { scale: [1, 1.08, 1], y: [0, -6, 0] },
+    animate: { scale: [1, 1.06, 1], y: [0, -4, 0] },
     transition: {
       scale: { duration: 0.5, repeat: Infinity, ease: 'easeInOut' },
       y: { duration: 0.5, repeat: Infinity, ease: 'easeInOut' },
     },
   },
   thinking: {
-    animate: { rotate: [-2, 2, -2], scale: 1 },
+    animate: { rotate: [-2, 2, -2] },
     transition: { rotate: { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } },
   },
   sleeping: {
@@ -49,7 +49,7 @@ const moodAnimations: Record<SpriteMood, { animate: object; transition: object }
   },
 };
 
-// Check which mood images actually exist (cached after first probe)
+// Cache which mood images exist
 const imageExists: Record<string, boolean> = {};
 
 function useResolvedSrc(mood: SpriteMood): string {
@@ -57,26 +57,12 @@ function useResolvedSrc(mood: SpriteMood): string {
 
   useEffect(() => {
     const target = MOOD_IMAGES[mood];
-    // Already know it doesn't exist
-    if (imageExists[target] === false) {
-      setSrc(FALLBACK);
-      return;
-    }
-    // Already know it exists
-    if (imageExists[target] === true) {
-      setSrc(target);
-      return;
-    }
-    // Probe with a raw img element (bypasses next/image optimizer)
+    if (imageExists[target] === false) { setSrc(FALLBACK); return; }
+    if (imageExists[target] === true) { setSrc(target); return; }
+
     const img = new window.Image();
-    img.onload = () => {
-      imageExists[target] = true;
-      setSrc(target);
-    };
-    img.onerror = () => {
-      imageExists[target] = false;
-      setSrc(FALLBACK);
-    };
+    img.onload = () => { imageExists[target] = true; setSrc(target); };
+    img.onerror = () => { imageExists[target] = false; setSrc(FALLBACK); };
     img.src = target;
   }, [mood]);
 
@@ -88,30 +74,22 @@ export default function SirPompSprite({ mood }: SirPompSpriteProps) {
   const anim = moodAnimations[mood] ?? moodAnimations.idle;
 
   return (
-    <div className="flex items-center justify-center w-full h-full">
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={mood}
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, ...anim.animate }}
-          exit={{ opacity: 0, scale: 0.95 }}
-          transition={{
-            opacity: { duration: 0.25 },
-            ...anim.transition,
-          }}
-          className="relative w-[200px] h-[200px]"
-        >
-          <Image
-            src={src}
-            alt={`Sir Pomp-a-Lot is ${mood}`}
-            fill
-            sizes="200px"
-            className="object-contain"
-            priority
-            unoptimized
-          />
-        </motion.div>
-      </AnimatePresence>
+    <div className="flex items-center justify-center w-full h-full p-4">
+      <motion.div
+        animate={anim.animate}
+        transition={anim.transition}
+        className="relative w-full h-full max-w-[360px] max-h-[360px]"
+      >
+        <Image
+          src={src}
+          alt={`Sir Pomp-a-Lot is ${mood}`}
+          fill
+          sizes="360px"
+          className="object-contain"
+          priority
+          unoptimized
+        />
+      </motion.div>
     </div>
   );
 }
