@@ -65,7 +65,7 @@ export async function POST(req: NextRequest) {
     // --- Audio path: combined STT + Chat in one call ---
     if (audioBase64 && audioMimeType) {
       const model = genAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         // No safety settings — system prompt mentions "fire, knives, naughty" which
         // triggers aggressive filters. We use our own safety layer instead.
         generationConfig: {
@@ -145,7 +145,7 @@ export async function POST(req: NextRequest) {
     // --- Text path: backward compatibility ---
     if (message) {
       const model = genAI.getGenerativeModel({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         safetySettings: SAFETY_SETTINGS,
         generationConfig: {
           maxOutputTokens: 1024,
