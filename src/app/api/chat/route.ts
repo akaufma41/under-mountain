@@ -70,6 +70,10 @@ export async function POST(req: NextRequest) {
         // triggers aggressive filters. We use our own safety layer instead.
         generationConfig: {
           maxOutputTokens: 1024,
+          // Disable thinking — saves 1-3s per call. A silly knight responding
+          // to a 5-year-old doesn't need chain-of-thought reasoning.
+          // @ts-expect-error — thinkingConfig supported by API but not yet in SDK types
+          thinkingConfig: { thinkingBudget: 0 },
         },
       });
 
@@ -90,10 +94,12 @@ export async function POST(req: NextRequest) {
       textPrompt += '\n\nNow listen to the audio from The Friendly Giant. On the first line write HEARD: followed by what she said. On the second line write REPLY: followed by your in-character response.\nExample:\nHEARD: hello sir pomp\nREPLY: Hark! The Giant speaks! Did you bring any cheese?';
 
       // Flat array of parts — same format as the working STT endpoint
+      const t0 = Date.now();
       const result = await model.generateContent([
         { inlineData: { mimeType: audioMimeType, data: audioBase64 } },
         { text: textPrompt },
       ]);
+      console.log(`[CHAT API] Gemini call took ${Date.now() - t0}ms`);
 
       const response = result.response;
 

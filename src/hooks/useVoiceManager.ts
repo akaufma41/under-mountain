@@ -182,6 +182,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
       let objectUrl: string | null = null;
       try {
         console.log('[TTS] Fetching audio for:', text.slice(0, 50));
+        const ttsStart = performance.now();
         const res = await fetchWithTimeout('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -189,6 +190,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         });
 
         if (!res.ok) throw new Error(`TTS request failed: ${res.status}`);
+        console.log(`[TTS] TTS round-trip: ${Math.round(performance.now() - ttsStart)}ms`);
 
         const blob = await res.blob();
         objectUrl = URL.createObjectURL(blob);
@@ -276,6 +278,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
           historyLength: requestBody.history.length,
         });
 
+        const chatStart = performance.now();
         const res = await fetchWithTimeout('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -284,6 +287,7 @@ export function useVoiceManager(options: VoiceManagerOptions = {}): VoiceManager
         });
 
         const data = await res.json();
+        console.log(`[PROCESS] Chat round-trip: ${Math.round(performance.now() - chatStart)}ms`);
         const text = data.text || "My armor is squeaking! Say that again?";
         const transcript = (data.transcript || '').trim();
 

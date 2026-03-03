@@ -49,6 +49,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'No TTS key' }, { status: 500 });
     }
 
+    const ttsStart = Date.now();
     const geminiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${geminiKey}`,
       {
@@ -67,6 +68,8 @@ export async function POST(req: NextRequest) {
         }),
       }
     );
+
+    console.log(`[TTS] Gemini TTS call took ${Date.now() - ttsStart}ms`);
 
     if (!geminiRes.ok) {
       const err = await geminiRes.text();
