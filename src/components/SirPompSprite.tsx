@@ -37,7 +37,7 @@ export default function SirPompSprite({ isTalking = false }: SirPompSpriteProps)
     <div className="flex items-center justify-center w-full h-full p-4">
       <div className="relative w-full h-full max-w-[360px] max-h-[360px]">
         <Image
-          src={mouthOpen ? '/sir-pomp-talk.png' : '/sir-pomp.png'}
+          src={mouthOpen ? '/sir-pomp-talk.png' : '/sir-pomp-idle.png'}
           alt="Sir Pomp-a-Lot"
           fill
           sizes="360px"
